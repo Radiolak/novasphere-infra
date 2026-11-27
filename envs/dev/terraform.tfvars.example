@@ -1,0 +1,6 @@
+# Copier en terraform.tfvars (ignore par Git). Sert seulement sur le poste du referent AWS
+# (destruction, diagnostic). La CI lit les memes valeurs dans les TF_VAR_ des workflows.
+owner         = "byi"
+environment   = "dev"
+instance_type = "t3.micro"
+# db_password : jamais ici. En local : export TF_VAR_db_password=...
