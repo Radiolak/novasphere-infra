@@ -1,0 +1,134 @@
+name: Terraform Apply
+on:
+  push:
+    branches: [main]
+    paths: ["envs/**"]
+  # Lancement a la main (Actions > Terraform Apply > Run workflow, ou gh workflow run) :
+  #   mode=drift : detection de derive sur dev et prod (pas de cron : la nuit, les identifiants du lab ont expire)
+  #   mode=apply : redeploiement de dev puis de prod en debut de session, sans changer le code
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "drift : detecter la derive ; apply : redeployer dev puis prod"
+        type: choice
+        options: [drift, apply]
+        default: drift
+
+# Learner Lab : pas de federation OIDC (IAM verrouille). Identifiants de session du lab
+# en secrets du depot, a mettre a jour a chaque Start Lab (validite 4 h).
+permissions:
+  contents: read
+
+jobs:
+  apply-dev:
+    if: github.event_name == 'push' || inputs.mode == 'apply'
+    runs-on: ubuntu-latest
+    environment: dev
+    # Pas de cancel-in-progress : un apply en cours n'est jamais annule.
+    concurrency:
+      group: tfstate-dev
+    env:
+      TF_VAR_owner: ${{ vars.OWNER }}
+      TF_VAR_environment: dev
+      TF_VAR_instance_type: t3.micro
+      TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+    defaults:
+      run:
+        working-directory: envs/dev
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.17.1"
+      - run: terraform init -input=false
+      - run: terraform plan -no-color -input=false -out=tfplan
+      # Apply du fichier de plan : ce qui est applique est exactement ce qui a ete calcule.
+      - run: terraform apply -no-color -input=false tfplan
+      - name: Adresse de l'ALB
+        # En echec tant que l'ALB n'existe pas (squelette) : sans effet sur le job.
+        continue-on-error: true
+        run: terraform output -raw alb_dns_name
+
+  apply-prod:
+    if: github.event_name == 'push' || inputs.mode == 'apply'
+    needs: apply-dev
+    runs-on: ubuntu-latest
+    # Environnement protege : le job attend l'approbation d'un autre membre (Review deployments).
+    environment: prod
+    concurrency:
+      group: tfstate-prod
+    env:
+      TF_VAR_owner: ${{ vars.OWNER }}
+      TF_VAR_environment: prod
+      TF_VAR_instance_type: t3.small
+      TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+    defaults:
+      run:
+        working-directory: envs/prod
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.17.1"
+      - run: terraform init -input=false
+      - run: terraform plan -no-color -input=false -out=tfplan
+      - run: terraform apply -no-color -input=false tfplan
+      - name: Adresse de l'ALB
+        continue-on-error: true
+        run: terraform output -raw alb_dns_name
+
+  drift:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'drift'
+    runs-on: ubuntu-latest
+    strategy:
+      # Une derive sur dev ne doit pas annuler le controle de prod.
+      fail-fast: false
+      matrix:
+        env: [dev, prod]
+    # Meme environnement que l'apply : lit le DB_PASSWORD de cet environnement.
+    # Le controle de prod attend donc une approbation.
+    environment: ${{ matrix.env }}
+    concurrency:
+      group: tfstate-${{ matrix.env }}
+    env:
+      TF_VAR_owner: ${{ vars.OWNER }}
+      TF_VAR_environment: ${{ matrix.env }}
+      TF_VAR_instance_type: ${{ matrix.env == 'prod' && 't3.small' || 't3.micro' }}
+      TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+    defaults:
+      run:
+        working-directory: envs/${{ matrix.env }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.17.1"
+          # Sinon le wrapper renvoie 0 pour le code 2 de -detailed-exitcode : le job resterait vert.
+          terraform_wrapper: false
+      - run: terraform init -input=false
+      - name: Detecter la derive
+        run: |
+          set +e
+          terraform plan -input=false -detailed-exitcode -no-color
+          code=$?
+          set -e
+          if [ "$code" -eq 2 ]; then echo "::error::Derive detectee sur ${{ matrix.env }}"; exit 1; fi
+          exit $code
