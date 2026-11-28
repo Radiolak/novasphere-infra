@@ -1,0 +1,56 @@
+# =============================================================================
+# FICHIER DOCUMENTAIRE (extension .exemple : Terraform ne le lit pas)
+#
+# Role d'instance au moindre privilege, tel qu'on l'ecrit dans un compte AWS
+# classique. Dans le Learner Lab, IAM est verrouille : la creation de roles et de
+# profils d'instance est refusee. Le projet utilise donc le profil precree
+# LabInstanceProfile (role LabRole), qui peut lire TOUS les parametres SSM,
+# y compris ceux de prod depuis dev.
+#
+# Ici, dev ne peut lire que /novasphere/dev/* : la lecture de prod depuis dev
+# renverrait AccessDeniedException.
+#
+# Pour l'activer dans un compte classique : renommer en .tf et passer
+# aws_iam_instance_profile.web.name a la variable instance_profile_name du module.
+# =============================================================================
+
+data "aws_caller_identity" "current" {}
+
+data "aws_iam_policy_document" "ec2_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "web" {
+  name               = "novasphere-${var.environment}-web"
+  assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
+}
+
+resource "aws_iam_role_policy" "read_secrets" {
+  name = "read-secrets"
+  role = aws_iam_role.web.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameter"]
+      Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/novasphere/${var.environment}/*"
+    }]
+  })
+}
+
+# Session Manager : politique geree AWS, necessaire a l'agent SSM.
+resource "aws_iam_role_policy_attachment" "ssm_core" {
+  role       = aws_iam_role.web.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "web" {
+  name = "novasphere-${var.environment}-web"
+  role = aws_iam_role.web.name
+}
