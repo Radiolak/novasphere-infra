@@ -3,11 +3,18 @@
 *.tfstate
 *.tfstate.*
 *.tfplan
-terraform.tfvars
+tfplan
+plan.txt
+*.tfvars
+*.tfvars.json
 crash.log
+crash.*.log
 
-# Ansible : inventaire genere et secrets
-ansible/inventory.ini
+# Sorties brutes du scan (le resultat traite va dans SECURITE.md)
+scan-*.txt
+
+# Ansible : inventaires generes et secrets
+ansible/inventory*.ini
 ansible/.vault_pass
 *.retry
 
