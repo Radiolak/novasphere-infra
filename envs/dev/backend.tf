@@ -1,6 +1,6 @@
 terraform {
   backend "s3" {
-    bucket = "novasphere-tfstate-byi"
+    bucket = "novasphere-tfstate-bor"
     # une cle par environnement
     key     = "novasphere/dev/terraform.tfstate"
     region  = "us-east-1"
